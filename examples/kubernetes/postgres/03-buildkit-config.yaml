@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: buildkit
+data:
+  buildkitd.toml: |
+    [log]
+      level = "debug"
+
+    # Unix socket is required for in-container probes (buildctl default address).
+    [grpc]
+      address = ["unix:///run/buildkit/buildkitd.sock", "tcp://0.0.0.0:1234"]
+
+    # Shared solver cache metadata (no S3). Both builders use the same Postgres.
+    [cache]
+      backend = "postgres"
+      postgresDSN = "postgres://buildkit:buildkit-secret@buildkit-db-rw:5432/buildkit?sslmode=disable"

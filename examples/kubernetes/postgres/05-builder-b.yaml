@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: builder-b
+  namespace: buildkit
+  labels:
+    app: buildkit
+    builder: b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: buildkit
+      builder: b
+  template:
+    metadata:
+      labels:
+        app: buildkit
+        builder: b
+    spec:
+      containers:
+        - name: buildkitd
+          image: buildkit:postgres
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/buildkit/buildkitd.toml
+          ports:
+            - containerPort: 1234
+              name: grpc
+          startupProbe:
+            exec:
+              command: [buildctl, debug, workers]
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: [buildctl, debug, workers]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 30
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/buildkit/buildkitd.toml
+              subPath: buildkitd.toml
+            - name: data
+              mountPath: /var/lib/buildkit
+            - name: run-buildkit
+              mountPath: /run/buildkit
+      volumes:
+        - name: config
+          configMap:
+            name: buildkitd-config
+        - name: data
+          emptyDir: {}
+        - name: run-buildkit
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: builder-b
+  namespace: buildkit
+  labels:
+    app: buildkit
+    builder: b
+spec:
+  selector:
+    app: buildkit
+    builder: b
+  ports:
+    - port: 1234
+      targetPort: 1234
+      name: grpc

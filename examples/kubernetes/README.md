@@ -6,6 +6,10 @@ This directory contains Kubernetes manifests for `Pod`, `Deployment` (with `Serv
 * `StateFulset`: good for client-side load balancing, without registry-side cache
 * `Job`: good if you don't want to have daemon pods
 
+## Postgres shared cache (two builders)
+
+See [`postgres/`](./postgres/) for CloudNativePG + two `buildkitd` instances sharing Postgres cache metadata (no S3). Includes scripts to install the CNPG operator on a fresh cluster.
+
 ## Variants
 
 - `*.privileged.yaml`: Launches the Pod as the fully privileged root user.
