@@ -216,8 +216,26 @@ provenanceEnvDir = "/etc/buildkit/provenance.d"
   # per registry. If unset, the default concurrency limit is used.
   maxRegistryConcurrency = 4
 
+# Shared solver cache metadata (Postgres) and tiered S3 content store.
+# Multiple buildkitd instances can share the same Postgres database and S3 bucket
+# for global build cache while keeping fast local SSD for hot blobs.
+[cache]
+  # backend = "bbolt"  # default: local bolt database under buildkit root
+  backend = "postgres"
+  postgresDSN = "postgres://buildkit:secret@db.example.com:5432/buildkit?sslmode=require"
 
-# optional signed cache configuration for GitHub Actions backend
+  [cache.s3]
+    bucket = "my-buildkit-cache"
+    region = "us-east-1"
+    prefix = "prod/buildkit"
+    # Optional: credentials via env AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+    # endpointURL = "https://s3.amazonaws.com"
+    # usePathStyle = false
+
+  # GitHub Actions cache backend settings (unchanged from default behavior)
+  [cache.gha]
+    # ...
+
 [ghacache.sign]
 # command that signs the payload in stdin and outputs the signature to stdout. Normally you want cosign to produce the signature bytes.
 cmd = ""

@@ -41,6 +41,7 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/solver/bboltcachestorage"
+	"github.com/moby/buildkit/solver/pgcachestorage"
 	"github.com/moby/buildkit/solver/llbsolver/cdidevices"
 	"github.com/moby/buildkit/util/apicaps"
 	"github.com/moby/buildkit/util/appcontext"
@@ -873,7 +874,7 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 		frontends["gateway.v0"] = gwfe
 	}
 
-	cacheStorage, err := bboltcachestorage.NewStore(filepath.Join(cfg.Root, "cache.db"))
+	cacheStorage, err := createCacheStorage(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -921,13 +922,20 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 		return nil, err
 	}
 
+	resultStorage := worker.NewCacheResultStorage(wc)
+	if cfg.Cache.Backend == "postgres" && cfg.Cache.S3 != nil {
+		if pgStore, ok := cacheStorage.(*pgcachestorage.Store); ok {
+			resultStorage = worker.NewSharedCacheResultStorage(wc, pgStore)
+		}
+	}
+
 	return control.NewController(control.Opt{
 		SessionManager:            sessionManager,
 		WorkerController:          wc,
 		Frontends:                 frontends,
 		ResolveCacheExporterFuncs: remoteCacheExporterFuncs,
 		ResolveCacheImporterFuncs: remoteCacheImporterFuncs,
-		CacheManager:              solver.NewCacheManager(context.TODO(), "local", cacheStorage, worker.NewCacheResultStorage(wc)),
+		CacheManager:              solver.NewCacheManager(context.TODO(), "local", cacheStorage, resultStorage),
 		Entitlements:              cfg.Entitlements,
 		TraceCollector:            tc,
 		HistoryDB:                 historyDB,
@@ -943,6 +951,22 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 
 func resolverFunc(cfg *config.Config) docker.RegistryHosts {
 	return resolver.NewRegistryConfig(cfg.Registries)
+}
+
+func createCacheStorage(cfg *config.Config) (control.CacheStore, error) {
+	switch cfg.Cache.Backend {
+	case "", "bbolt":
+		bklog.L.Infof("using bbolt cache storage (local)")
+		return bboltcachestorage.NewStore(filepath.Join(cfg.Root, "cache.db"))
+	case "postgres":
+		if cfg.Cache.PostgresDSN == "" {
+			return nil, errors.New("postgresDSN is required when cache.backend=postgres")
+		}
+		bklog.L.Infof("using postgres cache storage backend for global shared cache metadata")
+		return pgcachestorage.NewStore(context.TODO(), cfg.Cache.PostgresDSN)
+	default:
+		return nil, errors.Errorf("unsupported cache.backend %q", cfg.Cache.Backend)
+	}
 }
 
 func newWorkerController(c *cli.Context, wiOpt workerInitializerOpt) (*worker.Controller, error) {
