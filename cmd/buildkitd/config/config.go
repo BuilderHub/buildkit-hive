@@ -54,9 +54,28 @@ type Config struct {
 	Cache CacheConfig `toml:"cache"`
 }
 
+// CacheConfig configures solver cache metadata and optional shared content storage.
 type CacheConfig struct {
-	GHA *ghatypes.CacheConfig `toml:"gha"`
+	// Backend is "bbolt" (default, local file) or "postgres" for global shared metadata.
+	Backend     string                `toml:"backend"`
+	PostgresDSN string                `toml:"postgresDSN"`
+	S3          *S3ContentStoreConfig `toml:"s3"`
+	GHA         *ghatypes.CacheConfig `toml:"gha"`
 }
+
+// S3ContentStoreConfig configures the tiered local+S3 content store for shared blobs.
+type S3ContentStoreConfig struct {
+	Bucket          string `toml:"bucket"`
+	Region          string `toml:"region"`
+	Prefix          string `toml:"prefix"`
+	BlobsPrefix     string `toml:"blobsPrefix"`
+	EndpointURL     string `toml:"endpointURL"`
+	AccessKeyID     string `toml:"accessKeyID"`
+	SecretAccessKey string `toml:"secretAccessKey"`
+	SessionToken    string `toml:"sessionToken"`
+	UsePathStyle    bool   `toml:"usePathStyle"`
+}
+
 
 type SystemConfig struct {
 	// PlatformCacheMaxAge controls how often supported platforms
@@ -174,7 +193,6 @@ type ContainerdConfig struct {
 	MaxParallelism int `toml:"max-parallelism"`
 
 	DefaultCgroupParent string `toml:"defaultCgroupParent"`
-
 	Rootless bool `toml:"rootless"`
 }
 
@@ -229,3 +247,4 @@ type GatewayFrontendConfig struct {
 	Enabled             *bool    `toml:"enabled"`
 	AllowedRepositories []string `toml:"allowedRepositories"`
 }
+

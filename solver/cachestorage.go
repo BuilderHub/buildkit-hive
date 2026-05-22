@@ -7,6 +7,7 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/util/compression"
 	digest "github.com/opencontainers/go-digest"
+	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
 
@@ -31,8 +32,9 @@ type CacheKeyStorage interface {
 
 // CacheResult is a record for a single solve result
 type CacheResult struct {
-	CreatedAt time.Time
-	ID        string
+	CreatedAt   time.Time
+	ID          string
+	Descriptors []ocispecs.Descriptor `json:"descriptors,omitempty"`
 }
 
 // CacheInfoLink is a link between two cache keys
