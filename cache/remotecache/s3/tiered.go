@@ -12,14 +12,16 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 )
 
 // TieredStore is a content.Store that uses local SSD as hot cache and S3 as shared backing store.
 type TieredStore struct {
-	local     content.Store
-	s3        *s3Client
-	pullLocks *locker.Locker
-	uploadWG  sync.WaitGroup
+	local             content.Store
+	s3                *s3Client
+	pullLocks         *locker.Locker
+	uploadParallelism int
+	uploadWG          sync.WaitGroup
 }
 
 var _ content.Store = (*TieredStore)(nil)
@@ -30,10 +32,15 @@ func NewTieredContentStore(ctx context.Context, local content.Store, cfg Config)
 	if err != nil {
 		return nil, err
 	}
+	parallelism := cfg.UploadParallelism
+	if parallelism <= 0 {
+		parallelism = 4
+	}
 	return &TieredStore{
-		local:     local,
-		s3:        s3c,
-		pullLocks: locker.New(),
+		local:             local,
+		s3:                s3c,
+		pullLocks:         locker.New(),
+		uploadParallelism: parallelism,
 	}, nil
 }
 
@@ -169,28 +176,92 @@ func (tw *tieredWriter) Commit(ctx context.Context, size int64, expected digest.
 	return nil
 }
 
+func uploadDescs(descs []ocispecs.Descriptor, topLayerOnly bool) []ocispecs.Descriptor {
+	if !topLayerOnly || len(descs) <= 1 {
+		return descs
+	}
+	return descs[len(descs)-1:]
+}
+
+// EnsureUploaded uploads descriptor blobs to S3 synchronously if not already present.
+func (t *TieredStore) EnsureUploaded(ctx context.Context, descs []ocispecs.Descriptor, topLayerOnly bool) error {
+	return t.runParallel(ctx, uploadDescs(descs, topLayerOnly), func(ctx context.Context, desc ocispecs.Descriptor) error {
+		return t.uploadBlob(ctx, desc.Digest, desc.Size)
+	})
+}
+
+// EnsureLocal pulls missing descriptor blobs from S3 into the local store in parallel.
+func (t *TieredStore) EnsureLocal(ctx context.Context, descs []ocispecs.Descriptor) error {
+	return t.runParallel(ctx, descs, func(ctx context.Context, desc ocispecs.Descriptor) error {
+		if _, err := t.local.Info(ctx, desc.Digest); err == nil {
+			return nil
+		} else if !cerrdefs.IsNotFound(err) {
+			return err
+		}
+		t.pullLocks.Lock(desc.Digest.String())
+		defer t.pullLocks.Unlock(desc.Digest.String())
+		if _, err := t.local.Info(ctx, desc.Digest); err == nil {
+			return nil
+		} else if !cerrdefs.IsNotFound(err) {
+			return err
+		}
+		return t.pullFromS3(ctx, desc)
+	})
+}
+
+func (t *TieredStore) runParallel(ctx context.Context, descs []ocispecs.Descriptor, fn func(context.Context, ocispecs.Descriptor) error) error {
+	if len(descs) == 0 {
+		return nil
+	}
+	sem := make(chan struct{}, t.uploadParallelism)
+	eg, ctx := errgroup.WithContext(ctx)
+	for _, desc := range descs {
+		eg.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			defer func() { <-sem }()
+			if err := fn(ctx, desc); err != nil {
+				return errors.Wrapf(err, "blob %s", desc.Digest)
+			}
+			return nil
+		})
+	}
+	return eg.Wait()
+}
+
+func (t *TieredStore) uploadBlob(ctx context.Context, dgst digest.Digest, size int64) error {
+	t.pullLocks.Lock(dgst.String())
+	defer t.pullLocks.Unlock(dgst.String())
+
+	key := t.s3.blobKey(dgst)
+	if lastMod, _, err := t.s3.exists(ctx, key); err != nil {
+		return err
+	} else if lastMod != nil {
+		return nil
+	}
+
+	ra, err := t.local.ReaderAt(ctx, ocispecs.Descriptor{Digest: dgst, Size: size})
+	if err != nil {
+		return errors.Wrapf(err, "failed to read local blob %s for S3 upload", dgst)
+	}
+	defer ra.Close()
+
+	if err := t.s3.saveMutableAt(ctx, key, io.NewSectionReader(ra, 0, ra.Size())); err != nil {
+		return errors.Wrapf(err, "failed to upload blob %s to S3", dgst)
+	}
+	return nil
+}
+
 func (t *TieredStore) uploadAsync(ctx context.Context, dgst digest.Digest, size int64) {
 	t.uploadWG.Add(1)
 	go func() {
 		defer t.uploadWG.Done()
 		uploadCtx := context.WithoutCancel(ctx)
-		key := t.s3.blobKey(dgst)
-		if lastMod, _, err := t.s3.exists(uploadCtx, key); err != nil {
-			bklog.G(uploadCtx).WithError(err).Warnf("failed to check S3 for blob %s", dgst)
-			return
-		} else if lastMod != nil {
-			return
-		}
-
-		ra, err := t.local.ReaderAt(uploadCtx, ocispecs.Descriptor{Digest: dgst, Size: size})
-		if err != nil {
-			bklog.G(uploadCtx).WithError(err).Warnf("failed to read local blob %s for S3 upload", dgst)
-			return
-		}
-		defer ra.Close()
-
-		if err := t.s3.saveMutableAt(uploadCtx, key, io.NewSectionReader(ra, 0, ra.Size())); err != nil {
-			bklog.G(uploadCtx).WithError(err).Warnf("failed to upload blob %s to S3", dgst)
+		if err := t.uploadBlob(uploadCtx, dgst, size); err != nil {
+			bklog.G(uploadCtx).WithError(err).Warnf("async S3 upload failed for blob %s", dgst)
 		}
 	}()
 }

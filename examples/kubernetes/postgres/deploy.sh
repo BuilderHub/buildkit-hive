@@ -36,6 +36,12 @@ if [[ -z "${SKIP_IMAGE}" ]]; then
   fi
 fi
 
+if [[ -f "${SCRIPT_DIR}/06-s3-env.secret.yaml" ]]; then
+  kubectl apply -f "${SCRIPT_DIR}/06-s3-env.secret.yaml"
+else
+  echo "Note: create ${SCRIPT_DIR}/06-s3-env.secret.yaml for S3/R2 (see README)."
+fi
+
 kubectl apply -f "${SCRIPT_DIR}/03-buildkit-config.yaml"
 kubectl apply -f "${SCRIPT_DIR}/04-builder-a.yaml"
 kubectl apply -f "${SCRIPT_DIR}/05-builder-b.yaml"

@@ -1,6 +1,6 @@
-# Postgres-backed shared cache (two builders, no S3)
+# Postgres + S3 shared cache (two builders)
 
-Two privileged `buildkitd` instances (**builder-a**, **builder-b**) share solver cache **metadata** in a single [CloudNativePG](https://cloudnative-pg.io/) Postgres cluster. Layer blobs stay on each builder's local disk (`emptyDir`).
+Two privileged `buildkitd` instances (**builder-a**, **builder-b**) share solver cache **metadata** in [CloudNativePG](https://cloudnative-pg.io/) Postgres and **blobs** in S3-compatible storage (e.g. Cloudflare R2) via env vars in Secret `buildkit-s3-env`.
 
 Requires a BuildKit image built from this repo (postgres cache backend is not in upstream `moby/buildkit` yet).
 
@@ -50,7 +50,28 @@ docker build -t buildkit:postgres ../../../
 kind load docker-image buildkit:postgres   # if using kind
 ```
 
-### 3. Apply manifests
+### 3. S3 / R2 credentials (env vars)
+
+```bash
+cp 06-s3-env.secret.example.yaml 06-s3-env.secret.yaml
+# Edit: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BUCKET, AWS_ENDPOINT_URL
+kubectl apply -f 06-s3-env.secret.yaml
+```
+
+Or create the secret without a file:
+
+```bash
+kubectl -n buildkit create secret generic buildkit-s3-env \
+  --from-literal=AWS_ACCESS_KEY_ID='YOUR_R2_ACCESS_KEY_ID' \
+  --from-literal=AWS_SECRET_ACCESS_KEY='YOUR_R2_SECRET_ACCESS_KEY' \
+  --from-literal=AWS_BUCKET='buildkit-hive-test' \
+  --from-literal=AWS_REGION='auto' \
+  --from-literal=AWS_ENDPOINT_URL='https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com'
+```
+
+For **Cloudflare R2**, use the **S3 API** access key pair from the R2 dashboard (not the account API token value). `AWS_REGION=auto` is fine with a custom endpoint.
+
+### 4. Apply manifests
 
 ```bash
 kubectl apply -f 00-namespace.yaml
@@ -62,15 +83,15 @@ kubectl apply -f 04-builder-a.yaml
 kubectl apply -f 05-builder-b.yaml
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```bash
 kubectl -n buildkit get pods
-kubectl -n buildkit logs deploy/builder-a | grep -i postgres
-kubectl -n buildkit logs deploy/builder-b | grep -i postgres
+kubectl -n buildkit logs deploy/builder-a | grep -iE 'postgres|s3|tiered'
+kubectl -n buildkit logs deploy/builder-b | grep -iE 'postgres|s3|tiered'
 ```
 
-Both should log: `using postgres cache storage backend for global shared cache metadata`.
+Expect postgres cache backend and tiered S3 content store wiring when the secret is present.
 
 Probes use `buildctl` against the default unix socket (`unix:///run/buildkit/buildkitd.sock`).
 The config must expose that socket alongside TCP; liveness uses a TCP check only so a slow
@@ -84,11 +105,39 @@ buildctl debug workers
 
 ## What is shared vs local
 
-| Shared (Postgres) | Per builder |
-|-------------------|-------------|
-| Solver cache graph / metadata | Blob content under `/var/lib/buildkit` |
+| Shared | Per builder |
+|--------|-------------|
+| Postgres: solver cache graph / metadata + OCI descriptors | Local hot tier under `/var/lib/buildkit` |
+| S3/R2: authoritative blobs (async upload by default) | Same bucket prefix for all builders |
 
-Cross-daemon blob rehydration (`SharedCacheResultStorage`) requires **both** postgres and `[cache.s3]` in config. This example omits S3 on purpose.
+Cross-builder cache hits require **both** postgres and `[cache.s3]`. Layer descriptors are written to Postgres on each cached step; blobs upload to S3 in the background by default.
+
+### Performance tuning (`[cache.s3]`)
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `syncUploadOnSave` | `false` | Faster first build; cross-builder may wait briefly for async upload |
+| `syncUploadOnSave` | `true` | Blocks on R2 upload per layer; immediate cross-builder reuse |
+| `uploadTopLayerOnly` | `true` | Sync upload only the newest layer (parents assumed already in S3) |
+| `prefetchOnLoad` | `true` | Parallel S3→local pull before rehydrating cache on another builder |
+| `uploadParallelism` | `4` | Concurrent S3 uploads and prefetch pulls |
+| `existsRetryAttempts` | `5` async / `1` sync | How long to wait for blobs to appear in S3 |
+| `existsRetryInterval` | `2s` | Delay between Exists retries |
+
+For repeat builds on the **same builder**, use a **persistent volume** on `/var/lib/buildkit` (PVC) so the local hot tier survives pod restarts.
+
+**Note:** Cache entries created before cross-builder descriptor export was enabled will not cross-hit until rebuilt once.
+
+### Env vars (injected via `buildkit-s3-env`)
+
+| Variable | Purpose |
+|----------|---------|
+| `AWS_ACCESS_KEY_ID` | S3 access key |
+| `AWS_SECRET_ACCESS_KEY` | S3 secret key |
+| `AWS_BUCKET` | Bucket name |
+| `AWS_REGION` | Region (`auto` for R2) |
+| `AWS_ENDPOINT_URL` | Custom endpoint (required for R2) |
+| `AWS_SESSION_TOKEN` | Optional; usually unset for R2 |
 
 ## Cleanup
 
@@ -106,6 +155,7 @@ kubectl delete namespace buildkit
 | `00-namespace.yaml` | `buildkit` namespace |
 | `01-cnpg-secret.yaml` | DB user/password (dev defaults) |
 | `02-cnpg-cluster.yaml` | CNPG `Cluster` (service `buildkit-db-rw`) |
-| `03-buildkit-config.yaml` | `buildkitd.toml` with `[cache] backend = "postgres"` |
-| `04-builder-a.yaml` | Deployment + Service |
-| `05-builder-b.yaml` | Deployment + Service |
+| `03-buildkit-config.yaml` | `buildkitd.toml` postgres + `[cache.s3]` |
+| `04-builder-a.yaml` | Deployment + Service (`envFrom` secret) |
+| `05-builder-b.yaml` | Deployment + Service (`envFrom` secret) |
+| `06-s3-env.secret.example.yaml` | Template for S3 env secret (copy → `06-s3-env.secret.yaml`) |

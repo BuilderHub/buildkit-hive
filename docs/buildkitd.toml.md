@@ -219,6 +219,11 @@ provenanceEnvDir = "/etc/buildkit/provenance.d"
 # Shared solver cache metadata (Postgres) and tiered S3 content store.
 # Multiple buildkitd instances can share the same Postgres database and S3 bucket
 # for global build cache while keeping fast local SSD for hot blobs.
+#
+# Cross-builder cache hits require BOTH postgres backend and [cache.s3]. On cache save,
+# buildkitd exports OCI layer descriptors to Postgres. Blobs upload to S3 asynchronously
+# by default (syncUploadOnSave=false); set syncUploadOnSave=true for immediate cross-builder
+# availability at the cost of slower first builds.
 [cache]
   # backend = "bbolt"  # default: local bolt database under buildkit root
   backend = "postgres"
@@ -228,7 +233,15 @@ provenanceEnvDir = "/etc/buildkit/provenance.d"
     bucket = "my-buildkit-cache"
     region = "us-east-1"
     prefix = "prod/buildkit"
-    # Optional: credentials via env AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+    # syncUploadOnSave = false       # default: faster first build, async S3 upload
+    # syncUploadOnSave = true        # block on S3 upload per layer (immediate cross-builder)
+    # uploadParallelism = 4          # parallel S3 uploads and prefetch pulls
+    # uploadTopLayerOnly = true      # on sync save, only upload newest layer blob
+    # prefetchOnLoad = true          # parallel S3→local pull before cache rehydrate
+    # existsRetryAttempts = 5        # wait for async upload (default 5 async, 1 sync)
+    # existsRetryInterval = "2s"
+    # Optional via env: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+    # AWS_BUCKET, AWS_REGION, AWS_ENDPOINT_URL (custom S3 / R2 endpoint)
     # endpointURL = "https://s3.amazonaws.com"
     # usePathStyle = false
 

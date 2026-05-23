@@ -25,6 +25,9 @@ spec:
           args:
             - --config
             - /etc/buildkit/buildkitd.toml
+          envFrom:
+            - secretRef:
+                name: buildkit-s3-env
           ports:
             - containerPort: 1234
               name: grpc

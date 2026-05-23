@@ -925,7 +925,14 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 	resultStorage := worker.NewCacheResultStorage(wc)
 	if cfg.Cache.Backend == "postgres" && cfg.Cache.S3 != nil {
 		if pgStore, ok := cacheStorage.(*pgcachestorage.Store); ok {
-			resultStorage = worker.NewSharedCacheResultStorage(wc, pgStore)
+			perf := cfg.Cache.S3.SharedCachePerformance()
+			resultStorage = worker.NewSharedCacheResultStorage(wc, pgStore, worker.SharedCacheOptions{
+				SyncUploadOnSave:    perf.SyncUploadOnSave,
+				UploadTopLayerOnly:  perf.UploadTopLayerOnly,
+				PrefetchOnLoad:      perf.PrefetchOnLoad,
+				ExistsRetryAttempts: perf.ExistsRetryAttempts,
+				ExistsRetryInterval: perf.ExistsRetryInterval,
+			})
 		}
 	}
 

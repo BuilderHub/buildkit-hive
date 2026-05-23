@@ -12,7 +12,13 @@ data:
     [grpc]
       address = ["unix:///run/buildkit/buildkitd.sock", "tcp://0.0.0.0:1234"]
 
-    # Shared solver cache metadata (no S3). Both builders use the same Postgres.
+    # Postgres metadata + tiered S3 blobs. Bucket/creds/endpoint via env (Secret buildkit-s3-env).
     [cache]
       backend = "postgres"
       postgresDSN = "postgres://buildkit:buildkit-secret@buildkit-db-rw:5432/buildkit?sslmode=disable"
+
+      [cache.s3]
+        usePathStyle = true
+        prefix = "buildkit"
+        # syncUploadOnSave = false   # default: faster first build
+        # syncUploadOnSave = true    # immediate cross-builder after build

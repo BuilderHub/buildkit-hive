@@ -1,11 +1,15 @@
 package solver
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/moby/buildkit/identity"
+	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/util/compression"
 	digest "github.com/opencontainers/go-digest"
+	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -365,4 +369,67 @@ func testResult(v string) Result {
 		id:    identity.NewID(),
 		value: v,
 	}
+}
+
+type stubResultStore struct{}
+
+func (stubResultStore) Save(Result, time.Time) (CacheResult, error) {
+	return CacheResult{}, nil
+}
+
+func (stubResultStore) Load(context.Context, CacheResult) (Result, error) {
+	return nil, ErrNotFound
+}
+
+func (stubResultStore) LoadRemotes(context.Context, CacheResult, *compression.Config, session.Group) ([]*Remote, error) {
+	return nil, ErrNotFound
+}
+
+func (stubResultStore) Exists(context.Context, string) bool {
+	return false
+}
+
+func TestRecordsPreservesResultsWithSharedDescriptors(t *testing.T) {
+	ctx := t.Context()
+	backend := newInMemoryStore()
+	cm := NewCacheManager(ctx, "local", backend, stubResultStore{}).(*cacheManager)
+
+	key := NewCacheKey(dgst("shared-foo"), "", 0)
+	ckID := cm.getID(key)
+	require.NoError(t, backend.AddResult(ckID, CacheResult{
+		ID:          "worker-b::layer1",
+		Descriptors: []ocispecs.Descriptor{{Digest: dgst("blob"), Size: 100}},
+	}))
+
+	recs, err := cm.Records(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, recs)
+
+	var count int
+	require.NoError(t, backend.WalkResults(ckID, func(r CacheResult) error {
+		count++
+		return nil
+	}))
+	require.Equal(t, 1, count)
+}
+
+func TestRecordsReleasesResultsWithoutDescriptors(t *testing.T) {
+	ctx := t.Context()
+	backend := newInMemoryStore()
+	cm := NewCacheManager(ctx, "local", backend, stubResultStore{}).(*cacheManager)
+
+	key := NewCacheKey(dgst("local-only"), "", 0)
+	ckID := cm.getID(key)
+	require.NoError(t, backend.AddResult(ckID, CacheResult{ID: "worker-a::layer1"}))
+
+	recs, err := cm.Records(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, recs)
+
+	var count int
+	require.NoError(t, backend.WalkResults(ckID, func(r CacheResult) error {
+		count++
+		return nil
+	}))
+	require.Equal(t, 0, count)
 }

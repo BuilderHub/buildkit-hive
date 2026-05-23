@@ -23,6 +23,9 @@ func (cfg *Config) ValidateCache() error {
 		return errors.Errorf("unsupported cache.backend %q (use bbolt or postgres)", c.Backend)
 	}
 	if c.S3 != nil {
+		if err := c.S3.validatePerformance(); err != nil {
+			return err
+		}
 		if _, err := c.S3.ToS3Config(); err != nil {
 			return err
 		}
@@ -65,16 +68,20 @@ func (c *S3ContentStoreConfig) ToS3Config() (s3remotecache.Config, error) {
 	if blobsPrefix == "" {
 		blobsPrefix = "blobs/"
 	}
+	endpointURL := c.EndpointURL
+	if endpointURL == "" {
+		endpointURL = os.Getenv("AWS_ENDPOINT_URL")
+	}
 	return s3remotecache.Config{
-		Bucket:          bucket,
-		Region:          region,
-		Prefix:          c.Prefix,
-		BlobsPrefix:     blobsPrefix,
-		EndpointURL:     c.EndpointURL,
-		AccessKeyID:     accessKeyID,
-		SecretAccessKey: secretAccessKey,
+		Bucket:            bucket,
+		Region:            region,
+		Prefix:            c.Prefix,
+		BlobsPrefix:       blobsPrefix,
+		EndpointURL:       endpointURL,
+		AccessKeyID:       accessKeyID,
+		SecretAccessKey:   secretAccessKey,
 		SessionToken:      sessionToken,
-		UsePathStyle:    c.UsePathStyle,
-		UploadParallelism: 4,
+		UsePathStyle:      c.UsePathStyle,
+		UploadParallelism: c.resolvedUploadParallelism(),
 	}, nil
 }

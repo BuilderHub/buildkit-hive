@@ -74,6 +74,14 @@ type S3ContentStoreConfig struct {
 	SecretAccessKey string `toml:"secretAccessKey"`
 	SessionToken    string `toml:"sessionToken"`
 	UsePathStyle    bool   `toml:"usePathStyle"`
+
+	// Shared-cache performance (postgres + S3 cross-builder).
+	SyncUploadOnSave    *bool     `toml:"syncUploadOnSave"`
+	UploadParallelism   int       `toml:"uploadParallelism"`
+	UploadTopLayerOnly  *bool     `toml:"uploadTopLayerOnly"`
+	PrefetchOnLoad      *bool     `toml:"prefetchOnLoad"`
+	ExistsRetryAttempts *int      `toml:"existsRetryAttempts"`
+	ExistsRetryInterval *Duration `toml:"existsRetryInterval"`
 }
 
 
