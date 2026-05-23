@@ -232,7 +232,8 @@ provenanceEnvDir = "/etc/buildkit/provenance.d"
   [cache.s3]
     bucket = "my-buildkit-cache"
     region = "us-east-1"
-    prefix = "prod/buildkit"
+    # group = "global"               # default tenant; S3 keys: <bucket>/<group>/buildkitblobs/<digest>
+    # group = "team-a"               # isolate cache when sharing bucket/Postgres across teams
     # syncUploadOnSave = false       # default: faster first build, async S3 upload
     # syncUploadOnSave = true        # block on S3 upload per layer (immediate cross-builder)
     # uploadParallelism = 4          # parallel S3 uploads and prefetch pulls

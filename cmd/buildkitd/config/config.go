@@ -67,6 +67,9 @@ type CacheConfig struct {
 type S3ContentStoreConfig struct {
 	Bucket          string `toml:"bucket"`
 	Region          string `toml:"region"`
+	// Group isolates cache data when multiple teams share one bucket and Postgres.
+	// S3 object keys: <bucket>/<group>/buildkitblobs/...
+	Group           string `toml:"group"`
 	Prefix          string `toml:"prefix"`
 	BlobsPrefix     string `toml:"blobsPrefix"`
 	EndpointURL     string `toml:"endpointURL"`

@@ -19,6 +19,6 @@ data:
 
       [cache.s3]
         usePathStyle = true
-        prefix = "buildkit"
+        # group = "global"   # S3 layout: <bucket>/<group>/buildkitblobs/... ; set per Deployment for isolation
         # syncUploadOnSave = false   # default: faster first build
         # syncUploadOnSave = true    # immediate cross-builder after build

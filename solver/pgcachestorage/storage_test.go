@@ -17,7 +17,7 @@ func TestPostgresCacheStorage(t *testing.T) {
 	}
 
 	testutil.RunCacheStorageTests(t, func() solver.CacheKeyStorage {
-		st, err := NewStore(context.TODO(), dsn)
+		st, err := NewStore(context.TODO(), dsn, "global")
 		require.NoError(t, err)
 		t.Cleanup(func() {
 			require.NoError(t, st.Close())

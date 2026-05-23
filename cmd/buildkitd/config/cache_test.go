@@ -39,6 +39,38 @@ func TestValidateCache(t *testing.T) {
 		require.NoError(t, cfg.ValidateCache())
 	})
 
+	t.Run("s3 group default global", func(t *testing.T) {
+		group, err := CacheConfig{S3: &S3ContentStoreConfig{
+			Bucket: "b",
+			Region: "us-east-1",
+		}}.CacheGroup()
+		require.NoError(t, err)
+		require.Equal(t, "global", group)
+
+		s3cfg, err := (&S3ContentStoreConfig{Bucket: "b", Region: "us-east-1"}).ToS3Config()
+		require.NoError(t, err)
+		require.Equal(t, "global", s3cfg.Group)
+	})
+
+	t.Run("s3 group custom", func(t *testing.T) {
+		s3cfg, err := (&S3ContentStoreConfig{
+			Bucket: "b",
+			Region: "us-east-1",
+			Group:  "team-x",
+		}).ToS3Config()
+		require.NoError(t, err)
+		require.Equal(t, "team-x", s3cfg.Group)
+	})
+
+	t.Run("s3 invalid group", func(t *testing.T) {
+		cfg := Config{Cache: CacheConfig{S3: &S3ContentStoreConfig{
+			Bucket: "b",
+			Region: "us-east-1",
+			Group:  "team/x",
+		}}}
+		require.Error(t, cfg.ValidateCache())
+	})
+
 	t.Run("s3 from env", func(t *testing.T) {
 		t.Setenv("AWS_BUCKET", "my-bucket")
 		t.Setenv("AWS_REGION", "auto")
