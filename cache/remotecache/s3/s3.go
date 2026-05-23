@@ -51,12 +51,14 @@ const (
 	attrDisableAcceptEncoding = "disable_accept_encoding"
 	attrRetryMode             = "retry_mode"
 	attrRetryMaxAttempts      = "retry_max_attempts"
+	attrGroup                 = "group"
 	maxCopyObjectSize         = 5 * 1024 * 1024 * 1024
 )
 
 type Config struct {
 	Bucket                string
 	Region                string
+	Group                 string
 	Prefix                string
 	ManifestsPrefix       string
 	BlobsPrefix           string
@@ -180,9 +182,19 @@ func getConfig(attrs map[string]string) (Config, error) {
 		}
 	}
 
+	group := attrs[attrGroup]
+	if group == "" {
+		group, _ = os.LookupEnv("BUILDKIT_CACHE_GROUP")
+	}
+	group, err := ValidateCacheGroup(group)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Bucket:                bucket,
 		Region:                region,
+		Group:                 group,
 		Prefix:                prefix,
 		ManifestsPrefix:       manifestsPrefix,
 		BlobsPrefix:           blobsPrefix,
@@ -440,6 +452,7 @@ type s3Client struct {
 	*s3.Client
 	*manager.Uploader
 	bucket          string
+	group           string
 	prefix          string
 	blobsPrefix     string
 	manifestsPrefix string
@@ -484,6 +497,7 @@ func newS3Client(ctx context.Context, config Config) (*s3Client, error) {
 		Client:          client,
 		Uploader:        manager.NewUploader(client),
 		bucket:          config.Bucket,
+		group:           NormalizeCacheGroup(config.Group),
 		prefix:          config.Prefix,
 		blobsPrefix:     config.BlobsPrefix,
 		manifestsPrefix: config.ManifestsPrefix,
@@ -658,12 +672,16 @@ func (s3Client *s3Client) ReaderAt(ctx context.Context, desc ocispecs.Descriptor
 	return &readerAt{ReaderAtCloser: readerAtCloser, size: desc.Size}, nil
 }
 
+func (c *s3Client) groupRoot() string {
+	return NormalizeCacheGroup(c.group) + "/"
+}
+
 func (s3Client *s3Client) manifestKey(name string) string {
-	return s3Client.prefix + s3Client.manifestsPrefix + name
+	return s3Client.groupRoot() + s3Client.manifestsPrefix + name
 }
 
 func (s3Client *s3Client) blobKey(dgst digest.Digest) string {
-	return s3Client.prefix + s3Client.blobsPrefix + dgst.String()
+	return s3Client.groupRoot() + buildkitBlobsSegment + dgst.String()
 }
 
 func isNotFound(err error) bool {

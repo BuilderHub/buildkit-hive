@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	s3remotecache "github.com/moby/buildkit/cache/remotecache/s3"
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/util/bklog"
 	digest "github.com/opencontainers/go-digest"
@@ -19,15 +21,20 @@ const schemaVersion = 1
 
 // Store implements solver.CacheKeyStorage using Postgres for global shared metadata.
 type Store struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	group string
 }
 
 var _ solver.CacheKeyStorage = (*Store)(nil)
 
 // NewStore creates a new Postgres-backed cache store.
-func NewStore(ctx context.Context, dsn string) (*Store, error) {
+// group isolates cache metadata when multiple tenants share the same database (default: global).
+func NewStore(ctx context.Context, dsn string, group string) (*Store, error) {
+	group, err := s3remotecache.ValidateCacheGroup(group)
+	if err != nil {
+		return nil, err
+	}
 	var pool *pgxpool.Pool
-	var err error
 	for attempt := 0; attempt < 5; attempt++ {
 		pool, err = pgxpool.New(ctx, dsn)
 		if err != nil {
@@ -47,7 +54,7 @@ func NewStore(ctx context.Context, dsn string) (*Store, error) {
 		return nil, errors.Wrap(err, "failed to connect to postgres after retries")
 	}
 
-	s := &Store{pool: pool}
+	s := &Store{pool: pool, group: group}
 	if err := s.initSchema(ctx); err != nil {
 		pool.Close()
 		return nil, errors.Wrap(err, "failed to initialize postgres cache schema")
@@ -118,9 +125,21 @@ func (s *Store) Close() error {
 	return nil
 }
 
+func (s *Store) scopeID(id string) string {
+	return s.group + "::" + id
+}
+
+func (s *Store) unscopeID(scoped string) string {
+	prefix := s.group + "::"
+	if strings.HasPrefix(scoped, prefix) {
+		return strings.TrimPrefix(scoped, prefix)
+	}
+	return scoped
+}
+
 func (s *Store) Exists(id string) bool {
 	var exists bool
-	err := s.pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM cache_links WHERE id = $1)`, id).Scan(&exists)
+	err := s.pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM cache_links WHERE id = $1)`, s.scopeID(id)).Scan(&exists)
 	return err == nil && exists
 }
 
@@ -131,12 +150,16 @@ func (s *Store) Walk(fn func(id string) error) error {
 	}
 	defer rows.Close()
 
+	prefix := s.group + "::"
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		if err := fn(id); err != nil {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		if err := fn(s.unscopeID(id)); err != nil {
 			return err
 		}
 	}
@@ -144,7 +167,7 @@ func (s *Store) Walk(fn func(id string) error) error {
 }
 
 func (s *Store) WalkResults(id string, fn func(solver.CacheResult) error) error {
-	rows, err := s.pool.Query(context.Background(), `SELECT data FROM cache_results WHERE id = $1`, id)
+	rows, err := s.pool.Query(context.Background(), `SELECT data FROM cache_results WHERE id = $1`, s.scopeID(id))
 	if err != nil {
 		return err
 	}
@@ -168,7 +191,7 @@ func (s *Store) WalkResults(id string, fn func(solver.CacheResult) error) error 
 
 func (s *Store) Load(id, resultID string) (solver.CacheResult, error) {
 	var data []byte
-	err := s.pool.QueryRow(context.Background(), `SELECT data FROM cache_results WHERE id = $1 AND result_id = $2`, id, resultID).Scan(&data)
+	err := s.pool.QueryRow(context.Background(), `SELECT data FROM cache_results WHERE id = $1 AND result_id = $2`, s.scopeID(id), resultID).Scan(&data)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return solver.CacheResult{}, errors.WithStack(solver.ErrNotFound)
@@ -211,7 +234,8 @@ func (s *Store) AddResult(id string, res solver.CacheResult) error {
 		return err
 	}
 
-	_, err = tx.Exec(context.Background(), `INSERT INTO cache_links (id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
+	scopedID := s.scopeID(id)
+	_, err = tx.Exec(context.Background(), `INSERT INTO cache_links (id) VALUES ($1) ON CONFLICT DO NOTHING`, scopedID)
 	if err != nil {
 		return err
 	}
@@ -219,12 +243,12 @@ func (s *Store) AddResult(id string, res solver.CacheResult) error {
 	_, err = tx.Exec(context.Background(), `
 		INSERT INTO cache_results (id, result_id, data) VALUES ($1, $2, $3)
 		ON CONFLICT (id, result_id) DO UPDATE SET data = EXCLUDED.data
-	`, id, res.ID, data)
+	`, scopedID, res.ID, data)
 	if err != nil {
 		return err
 	}
 
-	_, err = tx.Exec(context.Background(), `INSERT INTO cache_by_result (result_id, id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, res.ID, id)
+	_, err = tx.Exec(context.Background(), `INSERT INTO cache_by_result (result_id, id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, res.ID, scopedID)
 	if err != nil {
 		return err
 	}
@@ -239,12 +263,16 @@ func (s *Store) WalkIDsByResult(resultID string, fn func(string) error) error {
 	}
 	defer rows.Close()
 
+	prefix := s.group + "::"
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		if err := fn(id); err != nil {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		if err := fn(s.unscopeID(id)); err != nil {
 			return err
 		}
 	}
@@ -391,12 +419,14 @@ func (s *Store) AddLink(id string, link solver.CacheInfoLink, target string) err
 	}
 	defer tx.Rollback(context.Background())
 
-	_, err = tx.Exec(context.Background(), `INSERT INTO cache_links (id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
+	scopedID := s.scopeID(id)
+	scopedTarget := s.scopeID(target)
+	_, err = tx.Exec(context.Background(), `INSERT INTO cache_links (id) VALUES ($1) ON CONFLICT DO NOTHING`, scopedID)
 	if err != nil {
 		return err
 	}
 
-	linkKey, err := linkKey(link, target)
+	linkKey, err := linkKey(link, scopedTarget)
 	if err != nil {
 		return err
 	}
@@ -404,14 +434,14 @@ func (s *Store) AddLink(id string, link solver.CacheInfoLink, target string) err
 	_, err = tx.Exec(context.Background(), `
 		INSERT INTO cache_link_forward (source_id, link_key, target_id) VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING
-	`, id, linkKey, target)
+	`, scopedID, linkKey, scopedTarget)
 	if err != nil {
 		return err
 	}
 
 	_, err = tx.Exec(context.Background(), `
 		INSERT INTO cache_backlinks (target_id, source_id) VALUES ($1, $2) ON CONFLICT DO NOTHING
-	`, target, id)
+	`, scopedTarget, scopedID)
 	if err != nil {
 		return err
 	}
@@ -429,7 +459,7 @@ func (s *Store) WalkLinks(id string, link solver.CacheInfoLink, fn func(id strin
 	rows, err := s.pool.Query(context.Background(), `
 		SELECT target_id FROM cache_link_forward
 		WHERE source_id = $1 AND link_key LIKE $2 || '%'
-	`, id, index)
+	`, s.scopeID(id), index)
 	if err != nil {
 		return err
 	}
@@ -440,7 +470,7 @@ func (s *Store) WalkLinks(id string, link solver.CacheInfoLink, fn func(id strin
 		if err := rows.Scan(&target); err != nil {
 			return err
 		}
-		if err := fn(target); err != nil {
+		if err := fn(s.unscopeID(target)); err != nil {
 			return err
 		}
 	}
@@ -448,19 +478,20 @@ func (s *Store) WalkLinks(id string, link solver.CacheInfoLink, fn func(id strin
 }
 
 func (s *Store) HasLink(id string, link solver.CacheInfoLink, target string) bool {
-	linkKey, err := linkKey(link, target)
+	linkKey, err := linkKey(link, s.scopeID(target))
 	if err != nil {
 		return false
 	}
 	var exists bool
 	err = s.pool.QueryRow(context.Background(), `
 		SELECT EXISTS(SELECT 1 FROM cache_link_forward WHERE source_id = $1 AND link_key = $2)
-	`, id, linkKey).Scan(&exists)
+	`, s.scopeID(id), linkKey).Scan(&exists)
 	return err == nil && exists
 }
 
 func (s *Store) WalkBacklinks(id string, fn func(id string, link solver.CacheInfoLink) error) error {
-	rows, err := s.pool.Query(context.Background(), `SELECT source_id FROM cache_backlinks WHERE target_id = $1`, id)
+	scopedID := s.scopeID(id)
+	rows, err := s.pool.Query(context.Background(), `SELECT source_id FROM cache_backlinks WHERE target_id = $1`, scopedID)
 	if err != nil {
 		return err
 	}
@@ -484,7 +515,7 @@ func (s *Store) WalkBacklinks(id string, fn func(id string, link solver.CacheInf
 	for _, src := range sources {
 		linkRows, err := s.pool.Query(context.Background(), `
 			SELECT link_key FROM cache_link_forward WHERE source_id = $1 AND link_key LIKE '%@' || $2
-		`, src.sourceID, id)
+		`, src.sourceID, scopedID)
 		if err != nil {
 			return err
 		}
@@ -506,7 +537,7 @@ func (s *Store) WalkBacklinks(id string, fn func(id string, link solver.CacheInf
 			}
 			l.Digest = digest.FromBytes(fmt.Appendf(nil, "%s@%d", l.Digest, l.Output))
 			l.Output = 0
-			if err := fn(src.sourceID, l); err != nil {
+			if err := fn(s.unscopeID(src.sourceID), l); err != nil {
 				linkRows.Close()
 				return err
 			}

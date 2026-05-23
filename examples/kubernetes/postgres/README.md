@@ -108,9 +108,13 @@ buildctl debug workers
 | Shared | Per builder |
 |--------|-------------|
 | Postgres: solver cache graph / metadata + OCI descriptors | Local hot tier under `/var/lib/buildkit` |
-| S3/R2: authoritative blobs (async upload by default) | Same bucket prefix for all builders |
+| S3/R2: authoritative blobs at `<bucket>/<group>/buildkitblobs/...` | Local hot tier per builder |
 
-Cross-builder cache hits require **both** postgres and `[cache.s3]`. Layer descriptors are written to Postgres on each cached step; blobs upload to S3 in the background by default.
+Cross-builder cache hits require **both** postgres and `[cache.s3]`.
+
+### Multi-tenant (`group`)
+
+Set a distinct `[cache.s3] group` on each Deployment (for example `team-a` vs `team-b`) when multiple teams share the same Postgres database and S3 bucket. The default `group = "global"` uses keys like `global/buildkitblobs/sha256:...` and scopes Postgres cache IDs with a `global::` prefix. Builders with different groups do not share cache metadata or blobs. Layer descriptors are written to Postgres on each cached step; blobs upload to S3 in the background by default.
 
 ### Performance tuning (`[cache.s3]`)
 

@@ -26,11 +26,29 @@ func (cfg *Config) ValidateCache() error {
 		if err := c.S3.validatePerformance(); err != nil {
 			return err
 		}
+		if _, err := c.S3.normalizedGroup(); err != nil {
+			return err
+		}
 		if _, err := c.S3.ToS3Config(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// CacheGroup returns the normalized cache tenant group for shared Postgres/S3 isolation.
+func (c CacheConfig) CacheGroup() (string, error) {
+	if c.S3 != nil {
+		return c.S3.normalizedGroup()
+	}
+	return s3remotecache.DefaultCacheGroup, nil
+}
+
+func (c *S3ContentStoreConfig) normalizedGroup() (string, error) {
+	if c == nil {
+		return s3remotecache.DefaultCacheGroup, nil
+	}
+	return s3remotecache.ValidateCacheGroup(c.Group)
 }
 
 // ToS3Config converts daemon S3 content store config to remotecache/s3 Config.
@@ -64,9 +82,9 @@ func (c *S3ContentStoreConfig) ToS3Config() (s3remotecache.Config, error) {
 	if sessionToken == "" {
 		sessionToken = os.Getenv("AWS_SESSION_TOKEN")
 	}
-	blobsPrefix := c.BlobsPrefix
-	if blobsPrefix == "" {
-		blobsPrefix = "blobs/"
+	group, err := c.normalizedGroup()
+	if err != nil {
+		return s3remotecache.Config{}, err
 	}
 	endpointURL := c.EndpointURL
 	if endpointURL == "" {
@@ -75,8 +93,7 @@ func (c *S3ContentStoreConfig) ToS3Config() (s3remotecache.Config, error) {
 	return s3remotecache.Config{
 		Bucket:            bucket,
 		Region:            region,
-		Prefix:            c.Prefix,
-		BlobsPrefix:       blobsPrefix,
+		Group:             group,
 		EndpointURL:       endpointURL,
 		AccessKeyID:       accessKeyID,
 		SecretAccessKey:   secretAccessKey,

@@ -970,7 +970,11 @@ func createCacheStorage(cfg *config.Config) (control.CacheStore, error) {
 			return nil, errors.New("postgresDSN is required when cache.backend=postgres")
 		}
 		bklog.L.Infof("using postgres cache storage backend for global shared cache metadata")
-		return pgcachestorage.NewStore(context.TODO(), cfg.Cache.PostgresDSN)
+		group, err := cfg.Cache.CacheGroup()
+		if err != nil {
+			return nil, err
+		}
+		return pgcachestorage.NewStore(context.TODO(), cfg.Cache.PostgresDSN, group)
 	default:
 		return nil, errors.Errorf("unsupported cache.backend %q", cfg.Cache.Backend)
 	}
