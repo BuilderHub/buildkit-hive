@@ -216,8 +216,39 @@ provenanceEnvDir = "/etc/buildkit/provenance.d"
   # per registry. If unset, the default concurrency limit is used.
   maxRegistryConcurrency = 4
 
+# Shared solver cache metadata (Postgres) and tiered S3 content store.
+# Multiple buildkitd instances can share the same Postgres database and S3 bucket
+# for global build cache while keeping fast local SSD for hot blobs.
+#
+# Cross-builder cache hits require BOTH postgres backend and [cache.s3]. On cache save,
+# buildkitd exports OCI layer descriptors to Postgres. Blobs upload to S3 asynchronously
+# by default (syncUploadOnSave=false); set syncUploadOnSave=true for immediate cross-builder
+# availability at the cost of slower first builds.
+[cache]
+  # backend = "bbolt"  # default: local bolt database under buildkit root
+  backend = "postgres"
+  postgresDSN = "postgres://buildkit:secret@db.example.com:5432/buildkit?sslmode=require"
 
-# optional signed cache configuration for GitHub Actions backend
+  [cache.s3]
+    bucket = "my-buildkit-cache"
+    region = "us-east-1"
+    prefix = "prod/buildkit"
+    # syncUploadOnSave = false       # default: faster first build, async S3 upload
+    # syncUploadOnSave = true        # block on S3 upload per layer (immediate cross-builder)
+    # uploadParallelism = 4          # parallel S3 uploads and prefetch pulls
+    # uploadTopLayerOnly = true      # on sync save, only upload newest layer blob
+    # prefetchOnLoad = true          # parallel S3→local pull before cache rehydrate
+    # existsRetryAttempts = 5        # wait for async upload (default 5 async, 1 sync)
+    # existsRetryInterval = "2s"
+    # Optional via env: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+    # AWS_BUCKET, AWS_REGION, AWS_ENDPOINT_URL (custom S3 / R2 endpoint)
+    # endpointURL = "https://s3.amazonaws.com"
+    # usePathStyle = false
+
+  # GitHub Actions cache backend settings (unchanged from default behavior)
+  [cache.gha]
+    # ...
+
 [ghacache.sign]
 # command that signs the payload in stdin and outputs the signature to stdout. Normally you want cosign to produce the signature bytes.
 cmd = ""

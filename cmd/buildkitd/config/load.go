@@ -14,6 +14,9 @@ func Load(r io.Reader) (Config, error) {
 	if err := toml.NewDecoder(r).Decode(&c); err != nil {
 		return c, errors.Wrap(err, "failed to parse config")
 	}
+	if err := c.ValidateCache(); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 

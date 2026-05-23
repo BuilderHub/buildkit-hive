@@ -164,7 +164,7 @@ func (c *cacheManager) Records(ctx context.Context, ck *CacheKey) (rrecs []*Cach
 				key:          ck,
 				CreatedAt:    r.CreatedAt,
 			})
-		} else {
+		} else if len(r.Descriptors) == 0 {
 			c.backend.Release(r.ID)
 		}
 		return nil

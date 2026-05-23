@@ -30,6 +30,7 @@ import (
 	sgzsource "github.com/containerd/stargz-snapshotter/fs/source"
 	remotesn "github.com/containerd/stargz-snapshotter/snapshot"
 	"github.com/moby/buildkit/cmd/buildkitd/config"
+	s3remotecache "github.com/moby/buildkit/cache/remotecache/s3"
 	"github.com/moby/buildkit/executor/oci"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/util/bklog"
@@ -327,7 +328,16 @@ func ociWorkerInitializer(c *cli.Context, common workerInitializerOpt) ([]worker
 		parallelismSem = semaphore.NewWeighted(int64(cfg.MaxParallelism))
 	}
 
-	opt, err := runc.NewWorkerOpt(common.config.Root, snFactory, cfg.Rootless, processMode, cfg.Labels, idmapping, nc, dns, cfg.Binary, cfg.ApparmorProfile, cfg.SELinux, parallelismSem, common.traceSocket, cfg.DefaultCgroupParent, cdiManager)
+	var s3Cfg *s3remotecache.Config
+	if common.config.Cache.S3 != nil {
+		sc, err := common.config.Cache.S3.ToS3Config()
+		if err != nil {
+			return nil, err
+		}
+		s3Cfg = &sc
+	}
+
+	opt, err := runc.NewWorkerOpt(common.config.Root, snFactory, cfg.Rootless, processMode, cfg.Labels, idmapping, nc, dns, cfg.Binary, cfg.ApparmorProfile, cfg.SELinux, parallelismSem, common.traceSocket, cfg.DefaultCgroupParent, cdiManager, s3Cfg)
 	if err != nil {
 		return nil, err
 	}

@@ -32,7 +32,6 @@ import (
 	"github.com/moby/buildkit/session/grpchijack"
 	containerdsnapshot "github.com/moby/buildkit/snapshot/containerd"
 	"github.com/moby/buildkit/solver"
-	"github.com/moby/buildkit/solver/bboltcachestorage"
 	"github.com/moby/buildkit/solver/llbsolver"
 	"github.com/moby/buildkit/solver/llbsolver/cdidevices"
 	"github.com/moby/buildkit/solver/llbsolver/compat"
@@ -71,13 +70,19 @@ type Opt struct {
 	Entitlements              []string
 	TraceCollector            sdktrace.SpanExporter
 	HistoryDB                 db.DB
-	CacheStore                *bboltcachestorage.Store
+	CacheStore                CacheStore
 	LeaseManager              *leaseutil.Manager
 	ContentStore              *containerdsnapshot.Store
 	HistoryConfig             *config.HistoryConfig
 	GarbageCollect            func(context.Context) error
 	GracefulStop              <-chan struct{}
 	ProvenanceEnv             map[string]any
+}
+
+// CacheStore persists solver cache metadata and can be closed on shutdown.
+type CacheStore interface {
+	solver.CacheKeyStorage
+	Close() error
 }
 
 type Controller struct { // TODO: ControlService

@@ -1,0 +1,18 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: buildkit-db
+  namespace: buildkit
+spec:
+  instances: 1
+  bootstrap:
+    initdb:
+      database: buildkit
+      owner: buildkit
+      secret:
+        name: buildkit-db-credentials
+  storage:
+    size: 2Gi
+  postgresql:
+    parameters:
+      max_connections: "200"
